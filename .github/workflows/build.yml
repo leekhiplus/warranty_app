@@ -5,7 +5,7 @@ on:
   push:
     branches: [main, master]
     paths:
-      - 'warranty_app.zip'
+      - '*.zip'
       - '.github/workflows/build.yml'
 
 permissions:
@@ -35,7 +35,13 @@ jobs:
         run: |
           set -e
           rm -rf work && mkdir work
-          unzip -q warranty_app.zip -d work
+          ZIP_FILE=$(ls -t *.zip 2>/dev/null | head -1)
+          if [ -z "$ZIP_FILE" ]; then
+            echo "::error::Repo root me koi .zip file nahi mili"
+            exit 1
+          fi
+          echo "Using zip: $ZIP_FILE"
+          unzip -q "$ZIP_FILE" -d work
           PUBSPEC=$(find work -name pubspec.yaml -not -path '*/.*' | head -1)
           APP_DIR=$(dirname "$PUBSPEC")
           echo "APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
