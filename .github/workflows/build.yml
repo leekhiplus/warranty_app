@@ -76,6 +76,18 @@ jobs:
           '''
           s = s.replace('</application>', receivers + '    </application>', 1)
           s = re.sub(r'android:label="[^"]*"', 'android:label="Warranty Tracker"', s, count=1)
+
+          # phone dialer (tel:) and share support for Android 11+
+          q_intents = '''
+                  <intent>
+                      <action android:name="android.intent.action.DIAL"/>
+                      <data android:scheme="tel"/>
+                  </intent>
+          '''
+          if '</queries>' in s:
+              s = s.replace('</queries>', q_intents + '    </queries>', 1)
+          else:
+              s = s.replace('</manifest>', '    <queries>' + q_intents + '    </queries>\n</manifest>', 1)
           mp.write_text(s, encoding='utf-8')
 
           # --- Gradle: core library desugaring ---
