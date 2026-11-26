@@ -1,0 +1,128 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - 'warranty_app.zip'
+      - '.github/workflows/build.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.4'
+          channel: stable
+          cache: true
+
+      - name: Unzip project
+        run: |
+          set -e
+          rm -rf work && mkdir work
+          unzip -q warranty_app.zip -d work
+          PUBSPEC=$(find work -name pubspec.yaml -not -path '*/.*' | head -1)
+          APP_DIR=$(dirname "$PUBSPEC")
+          echo "APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
+          echo "Project folder: $APP_DIR"
+
+      - name: Generate Android scaffold
+        run: |
+          set -e
+          flutter create --platforms=android --org com.pakapps --project-name warranty_tracker tmp_create
+          rm -rf "$APP_DIR/android"
+          cp -r tmp_create/android "$APP_DIR/android"
+
+      - name: Patch Android (permissions, notifications, desugaring)
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          python3 - <<'PY'
+          import re, pathlib
+
+          # --- AndroidManifest ---
+          mp = pathlib.Path('android/app/src/main/AndroidManifest.xml')
+          s = mp.read_text(encoding='utf-8')
+          perms = (
+              '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n'
+              '    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n'
+              '    <uses-permission android:name="android.permission.VIBRATE"/>\n'
+          )
+          s = s.replace('<application', perms + '    <application', 1)
+          receivers = '''
+              <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver" />
+              <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">
+                  <intent-filter>
+                      <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                      <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+                      <action android:name="android.intent.action.QUICKBOOT_POWERON"/>
+                      <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
+                  </intent-filter>
+              </receiver>
+          '''
+          s = s.replace('</application>', receivers + '    </application>', 1)
+          s = re.sub(r'android:label="[^"]*"', 'android:label="Warranty Tracker"', s, count=1)
+          mp.write_text(s, encoding='utf-8')
+
+          # --- Gradle: core library desugaring ---
+          kts = pathlib.Path('android/app/build.gradle.kts')
+          groovy = pathlib.Path('android/app/build.gradle')
+          if kts.exists():
+              g = kts.read_text(encoding='utf-8')
+              g = g.replace('compileOptions {', 'compileOptions {\n        isCoreLibraryDesugaringEnabled = true', 1)
+              dep = 'coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")'
+              if re.search(r'^dependencies\s*\{', g, re.M):
+                  g = re.sub(r'^dependencies\s*\{', 'dependencies {\n    ' + dep, g, count=1, flags=re.M)
+              else:
+                  g += '\ndependencies {\n    ' + dep + '\n}\n'
+              kts.write_text(g, encoding='utf-8')
+          elif groovy.exists():
+              g = groovy.read_text(encoding='utf-8')
+              g = g.replace('compileOptions {', 'compileOptions {\n        coreLibraryDesugaringEnabled true', 1)
+              dep = "coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'"
+              if re.search(r'^dependencies\s*\{', g, re.M):
+                  g = re.sub(r'^dependencies\s*\{', 'dependencies {\n    ' + dep, g, count=1, flags=re.M)
+              else:
+                  g += '\ndependencies {\n    ' + dep + '\n}\n'
+              groovy.write_text(g, encoding='utf-8')
+          PY
+
+      - name: Install packages
+        working-directory: ${{ env.APP_DIR }}
+        run: flutter pub get
+
+      - name: Build release APK
+        working-directory: ${{ env.APP_DIR }}
+        run: flutter build apk --release
+
+      - name: Rename APK
+        run: |
+          cp "$APP_DIR/build/app/outputs/flutter-apk/app-release.apk" warranty-tracker.apk
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: warranty-tracker-apk
+          path: warranty-tracker.apk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: Warranty Tracker v1.0.${{ github.run_number }}
+          files: warranty-tracker.apk
+          generate_release_notes: true
